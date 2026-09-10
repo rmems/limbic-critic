@@ -258,10 +258,11 @@ impl TDCritic {
     ///
     /// Current `f32` behavior is documented rather than sanitized:
     ///
-    /// - A **NaN** or infinite objective produces a non-finite TD error.
-    ///   Then `tanh` / `clamp` leave **NaN** dopamine and acetylcholine
-    ///   (NaN comparisons are false), while `±∞` TD errors saturate
-    ///   (`tanh(∞) = 1`, `tanh(-∞) = -1`).
+    /// - A **NaN** objective produces a NaN TD error. `tanh` / `clamp` then
+    ///   leave **NaN** dopamine and acetylcholine (NaN comparisons are false).
+    /// - A **±∞** objective produces an infinite TD error. `tanh` saturates
+    ///   (`tanh(∞) = 1`, `tanh(-∞) = -1`), so dopamine is `±1.0` and
+    ///   acetylcholine is `1.0`.
     /// - Auxiliary `volatility` / `stress` follow the same clamp rules as
     ///   [`SimpleCritic::assess`]: NaN stays NaN; infinities clamp to bounds.
     ///
