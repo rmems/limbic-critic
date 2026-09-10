@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pin Rust **1.98.1** in lockstep across `rust-version`, `rust-toolchain.toml`, and CI/coverage workflows.
 - Position the crate as a reward-shaping / modulator-mapping primitive (not a full actor–critic).
 
+### Added
+
+- `package.exclude` for CI/agent-only paths and a `cargo package` CI job.
+
 ### Fixed
 
 - `TDCritic::new(alpha)` now returns `Result<TDCritic, InvalidAlpha>` and accepts only `alpha` in `(0, 1]`.
