@@ -260,9 +260,13 @@ impl TDCritic {
     ///
     /// - A **NaN** objective produces a NaN TD error. `tanh` / `clamp` then
     ///   leave **NaN** dopamine and acetylcholine (NaN comparisons are false).
-    /// - A **±∞** objective produces an infinite TD error. `tanh` saturates
-    ///   (`tanh(∞) = 1`, `tanh(-∞) = -1`), so dopamine is `±1.0` and
-    ///   acetylcholine is `1.0`.
+    /// - A **±∞** objective on a finite EMA produces an infinite TD error.
+    ///   `tanh` saturates (`tanh(∞) = 1`, `tanh(-∞) = -1`), so that step's
+    ///   dopamine is `±1.0` and acetylcholine is `1.0`.
+    /// - After non-finite history, a later finite (or opposite-signed
+    ///   infinite) objective can make the EMA `∞ + -∞` or `0 * ∞`, so
+    ///   **dopamine becomes NaN**. Acetylcholine still saturates from
+    ///   `|td_error|.tanh()` when `td_error` is infinite.
     /// - Auxiliary `volatility` / `stress` follow the same clamp rules as
     ///   [`SimpleCritic::assess`]: NaN stays NaN; infinities clamp to bounds.
     ///
@@ -605,5 +609,15 @@ mod tests {
         let neg = td.assess(&ConstEnv(f32::NEG_INFINITY));
         assert_eq!(neg.dopamine, -1.0);
         assert_eq!(neg.acetylcholine, 1.0);
+    }
+
+    #[test]
+    fn td_critic_infinite_history_then_finite_yields_nan_dopamine() {
+        let mut td = TDCritic::new(1.0).expect("alpha in (0, 1]");
+        let _ = td.assess(&ConstEnv(f32::INFINITY));
+        // td_error = finite - ∞ = -∞; ACh saturates, but EMA is 0*∞ + 1*(-∞) → NaN.
+        let after = td.assess(&ConstEnv(0.0));
+        assert!(after.dopamine.is_nan());
+        assert_eq!(after.acetylcholine, 1.0);
     }
 }
