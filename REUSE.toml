@@ -20,6 +20,7 @@ path = [
     "Cargo.lock",
     "codecov.yml",
     "qodana.yaml",
+    "rust-toolchain.toml",
     ".gitignore",
     ".config/**",
 ]

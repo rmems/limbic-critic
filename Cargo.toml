@@ -2,7 +2,8 @@
 name = "limbic-critic"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+# Keep in lockstep with rust-toolchain.toml and CI (`toolchain: "1.98.1"`).
+rust-version = "1.98.1"
 description = "Neuromodulatory reward shaping and RL critic functions for SNNs."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/rmems/limbic-critic"

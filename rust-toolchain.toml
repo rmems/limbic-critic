@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 Limen-Neural contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Pinned toolchain for local dev and CI.
+# Keep in lockstep with Cargo.toml `rust-version` and
+# `.github/workflows/ci.yml` / `coverage.yml` (`toolchain: "1.98.1"`).
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -20,7 +20,7 @@ scalar values that feed into reward-modulated learning (e.g. `neuromod::rm_stdp`
   vectors for dopamine (reward), serotonin (risk/volatility), and norepinephrine
   (stress/telemetry)
 
-**MSRV:** Rust 1.85 (`rust-version` in `Cargo.toml`).
+**MSRV:** Rust 1.98.1 (`rust-version` in `Cargo.toml`, `rust-toolchain.toml`, and CI).
 
 ## Getting Started
 
