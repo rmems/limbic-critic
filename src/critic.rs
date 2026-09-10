@@ -260,6 +260,9 @@ impl TDCritic {
     ///
     /// - A **NaN** objective produces a NaN TD error. `tanh` / `clamp` then
     ///   leave **NaN** dopamine and acetylcholine (NaN comparisons are false).
+    ///   That NaN is stored in `prev_objective` and folded into `ema_reward`,
+    ///   so the state is **absorbing**: every later `assess`, even with a
+    ///   finite objective, yields NaN TD / dopamine / ACh. There is no reset.
     /// - A **±∞** objective on a finite EMA produces an infinite TD error.
     ///   `tanh` saturates (`tanh(∞) = 1`, `tanh(-∞) = -1`), so that step's
     ///   dopamine is `±1.0` and acetylcholine is `1.0`.
@@ -267,6 +270,9 @@ impl TDCritic {
     ///   infinite) objective can make the EMA `∞ + -∞` or `0 * ∞`, so
     ///   **dopamine becomes NaN**. Acetylcholine still saturates from
     ///   `|td_error|.tanh()` when `td_error` is infinite.
+    /// - Same-signed successive infinities (`+∞` then `+∞`, or `-∞` then
+    ///   `-∞`) produce `td_error = ∞ − ∞ = NaN`, so **both** dopamine and
+    ///   acetylcholine are NaN on that step (ACh does not saturate).
     /// - Auxiliary `volatility` / `stress` follow the same clamp rules as
     ///   [`SimpleCritic::assess`]: NaN stays NaN; infinities clamp to bounds.
     ///
@@ -619,5 +625,24 @@ mod tests {
         let after = td.assess(&ConstEnv(0.0));
         assert!(after.dopamine.is_nan());
         assert_eq!(after.acetylcholine, 1.0);
+    }
+
+    #[test]
+    fn td_critic_nan_history_then_finite_stays_nan() {
+        let mut td = TDCritic::new(0.1).expect("alpha in (0, 1]");
+        let _ = td.assess(&ConstEnv(f32::NAN));
+        let after = td.assess(&ConstEnv(0.5));
+        assert!(after.dopamine.is_nan());
+        assert!(after.acetylcholine.is_nan());
+    }
+
+    #[test]
+    fn td_critic_same_signed_infinities_yield_nan_ach() {
+        let mut td = TDCritic::new(1.0).expect("alpha in (0, 1]");
+        let _ = td.assess(&ConstEnv(f32::INFINITY));
+        // td_error = ∞ − ∞ = NaN; ACh does not saturate.
+        let after = td.assess(&ConstEnv(f32::INFINITY));
+        assert!(after.dopamine.is_nan());
+        assert!(after.acetylcholine.is_nan());
     }
 }
