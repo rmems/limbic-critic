@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Pin Rust **1.98.1** in lockstep across `rust-version`, `rust-toolchain.toml`, and CI/coverage workflows.
+- Position the crate as a reward-shaping / modulator-mapping primitive (not a full actor–critic).
 
 ### Fixed
 
