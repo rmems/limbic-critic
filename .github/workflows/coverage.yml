@@ -5,8 +5,8 @@ name: Codecov
 on:
   push:
     branches: [main]
+  # Match ci.yml: stacked PRs targeting feature branches still upload coverage.
   pull_request:
-    branches: [main]
 
 jobs:
   codecov:

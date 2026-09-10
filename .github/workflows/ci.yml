@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # Any PR (including the stacked crates.io readiness branches) so
+  # feature-to-feature PRs still run fmt/clippy/test/package.
   pull_request:
-    branches: [main]
 
 jobs:
   validate:
