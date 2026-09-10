@@ -510,14 +510,12 @@ mod tests {
 
     #[test]
     fn invalid_alpha_display_and_error() {
-        let Err(err) = TDCritic::new(0.0) else {
-            panic!("zero alpha is invalid");
-        };
+        assert!(matches!(TDCritic::new(0.0), Err(InvalidAlpha)));
         assert_eq!(
-            err.to_string(),
+            InvalidAlpha.to_string(),
             "TDCritic alpha must be in (0, 1] (finite, greater than 0, at most 1)"
         );
-        let as_error: &dyn std::error::Error = &err;
+        let as_error: &dyn std::error::Error = &InvalidAlpha;
         assert!(as_error.source().is_none());
     }
 
