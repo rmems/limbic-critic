@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! RL critic and reward shaping.
+//! Reward-shaping critics: map an [`Environment`] observation into a
+//! [`ModulatorVector`].
 //!
-//! Translates an [`Environment`] observation into a
-//! [`ModulatorVector`] of neuromodulator
-//! concentrations. Two critics are provided:
+//! These types are **modulator-mapping primitives**, not a full actor–critic
+//! or a learned value function. Two shapers are provided:
 //!
-//! - [`SimpleCritic`] — stateless, maps the immediate objective and optional
-//!   environment signals.
-//! - [`TDCritic`] — stateful temporal-difference critic that tracks reward
-//!   improvement over time.
+//! - [`SimpleCritic`] — stateless clamp of the immediate objective and
+//!   optional environment signals.
+//! - [`TDCritic`] — stateful EMA of successive objective *deltas*
+//!   (`objective − prev_objective`), then `tanh`-mapped into dopamine /
+//!   acetylcholine. “TD” here means that delta, not `r + γV(s′) − V(s)`.
 //!
 //! # Quick start
 //!
@@ -50,13 +51,12 @@
 use crate::environment::Environment;
 use crate::modulators::ModulatorVector;
 
-/// A stateless critic that maps immediate environment signals to neuromodulators.
+/// A stateless reward-shaping map from the current observation to modulators.
 ///
-/// `SimpleCritic` stores no history. It therefore cannot compute temporal
-/// surprise on its own: acetylcholine is read directly from
-/// [`Environment::surprise`] and clamped to `[0.0, 1.0]`. Use [`TDCritic`]
-/// when acetylcholine should be derived from the absolute TD error
-/// (`abs(td_error).tanh()`).
+/// `SimpleCritic` stores no history and does not estimate a value function.
+/// Acetylcholine is read directly from [`Environment::surprise`] and clamped
+/// to `[0.0, 1.0]`. Use [`TDCritic`] when acetylcholine should be derived
+/// from the absolute objective delta (`abs(td_error).tanh()`).
 ///
 /// # Mapping
 ///
@@ -135,11 +135,12 @@ impl SimpleCritic {
     }
 }
 
-/// A stateful temporal-difference (TD) critic.
+/// A stateful reward-shaping map based on successive objective deltas.
 ///
-/// Tracks the previous objective and an exponential moving average (EMA) of
-/// the TD error so that dopamine reflects *change* in reward rather than
-/// absolute level. Acetylcholine is derived from surprise in the TD signal
+/// “TD” here is an exponential moving average (EMA) of
+/// `objective − prev_objective`, **not** a learned `V(s)` or actor–critic
+/// backup. Dopamine reflects *change* in the raw objective rather than
+/// absolute level. Acetylcholine is derived from surprise in that delta
 /// (`abs(td_error).tanh()`), not from [`Environment::surprise`].
 ///
 /// # Internal state
