@@ -42,7 +42,7 @@
 //! assert_eq!(simple.acetylcholine, 0.3);
 //!
 //! // Temporal-difference critic: dopamine ∈ [-1, 1] after tanh of EMA(TD)
-//! let mut td = TDCritic::new(0.1);
+//! let mut td = TDCritic::new(0.1).expect("alpha in (0, 1]");
 //! let first = td.assess(&env);
 //! assert!((-1.0..=1.0).contains(&first.dopamine));
 //! ```
@@ -102,6 +102,16 @@ impl SimpleCritic {
     ///
     /// - `serotonin` ← [`Environment::volatility`] clamped to `[0.0, 1.0]`
     /// - `norepinephrine` ← [`Environment::stress`] clamped to `[0.0, 1.0]`
+    ///
+    /// # Non-finite observations
+    ///
+    /// Current `f32` behavior is documented rather than sanitized:
+    ///
+    /// - A **NaN** objective is not `> 0.0`, so `dopamine` is `0.0`.
+    /// - `+∞` objective clamps to `1.0`; `-∞` is treated as non-positive (`0.0`).
+    /// - NaN auxiliary signals (`surprise` / `volatility` / `stress`) pass
+    ///   through `clamp` as **NaN** (IEEE: NaN comparisons are false).
+    /// - `±∞` auxiliary signals clamp to the nearest bound (`0.0` or `1.0`).
     pub fn assess(env: &impl Environment) -> ModulatorVector {
         let objective = env.objective();
 
@@ -138,7 +148,7 @@ impl SimpleCritic {
 /// |-------|---------|
 /// | `prev_objective` | Objective observed on the previous [`assess`](Self::assess) call; starts at `0.0`. |
 /// | `ema_reward` | EMA of successive TD errors (`objective - prev_objective`); starts at `0.0`. |
-/// | `alpha` | EMA learning rate in `(0, 1]`. Higher values weight recent TD errors more heavily. |
+/// | `alpha` | EMA learning rate, **enforced** in `(0, 1]` by [`TDCritic::new`]. Higher values weight recent TD errors more heavily. |
 ///
 /// # Mapping
 ///
@@ -159,7 +169,7 @@ impl SimpleCritic {
 ///     fn objective(&self) -> f32 { self.0 }
 /// }
 ///
-/// let mut td = TDCritic::new(0.1);
+/// let mut td = TDCritic::new(0.1).expect("alpha in (0, 1]");
 /// let step1 = td.assess(&StubEnv(0.0));
 /// let step2 = td.assess(&StubEnv(1.0));
 /// // Improvement produces a higher (more positive) dopamine signal.
@@ -171,6 +181,22 @@ pub struct TDCritic {
     alpha: f32, // Learning rate for the EMA
 }
 
+/// `alpha` supplied to [`TDCritic::new`] was not in `(0, 1]`.
+///
+/// Rejected values include `0.0`, negatives, values greater than `1.0`,
+/// `NaN`, and infinities. Finite values in `(0, 1]` (including `1.0`)
+/// are accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidAlpha;
+
+impl std::fmt::Display for InvalidAlpha {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TDCritic alpha must be in (0, 1] (finite, greater than 0, at most 1)")
+    }
+}
+
+impl std::error::Error for InvalidAlpha {}
+
 impl TDCritic {
     /// Create a new TD critic with the given EMA learning rate.
     ///
@@ -178,8 +204,15 @@ impl TDCritic {
     ///
     /// - **Small `alpha`** (e.g. `0.05`) — smooth, slow reaction to changes.
     /// - **Large `alpha`** (e.g. `0.5`) — fast tracking of recent TD errors.
+    /// - **`alpha = 1.0`** — no memory; the EMA equals the latest TD error.
     ///
-    /// Initial state:
+    /// # Errors
+    ///
+    /// Returns [`InvalidAlpha`] when `alpha` is not in **`(0, 1]`**.
+    /// The predicate is `alpha > 0.0 && alpha <= 1.0`, which also rejects
+    /// `NaN` and infinities (IEEE comparisons with `NaN` are false).
+    ///
+    /// Initial state on success:
     /// - `prev_objective = 0.0`
     /// - `ema_reward = 0.0`
     ///
@@ -191,15 +224,18 @@ impl TDCritic {
     /// ```rust
     /// use limbic_critic::TDCritic;
     ///
-    /// let critic = TDCritic::new(0.2);
+    /// let critic = TDCritic::new(0.2).expect("alpha in (0, 1]");
     /// // critic is ready; call assess(&env) on each time step
     /// ```
-    pub fn new(alpha: f32) -> Self {
-        Self {
+    pub fn new(alpha: f32) -> Result<Self, InvalidAlpha> {
+        if !is_valid_alpha(alpha) {
+            return Err(InvalidAlpha);
+        }
+        Ok(Self {
             prev_objective: 0.0,
             ema_reward: 0.0,
             alpha,
-        }
+        })
     }
 
     /// Calculate neuromodulator concentrations from the TD error.
@@ -217,6 +253,28 @@ impl TDCritic {
     /// Unlike [`SimpleCritic::assess`], this method mutates internal state and
     /// can produce **negative dopamine** when recent TD errors are negative
     /// (worsening outcomes).
+    ///
+    /// # Non-finite observations
+    ///
+    /// Current `f32` behavior is documented rather than sanitized:
+    ///
+    /// - A **NaN** objective produces a NaN TD error. `tanh` / `clamp` then
+    ///   leave **NaN** dopamine and acetylcholine (NaN comparisons are false).
+    ///   That NaN is stored in `prev_objective` and folded into `ema_reward`,
+    ///   so the state is **absorbing**: every later `assess`, even with a
+    ///   finite objective, yields NaN TD / dopamine / ACh. There is no reset.
+    /// - A **±∞** objective on a finite EMA produces an infinite TD error.
+    ///   `tanh` saturates (`tanh(∞) = 1`, `tanh(-∞) = -1`), so that step's
+    ///   dopamine is `±1.0` and acetylcholine is `1.0`.
+    /// - After non-finite history, a later finite (or opposite-signed
+    ///   infinite) objective can make the EMA `∞ + -∞` or `0 * ∞`, so
+    ///   **dopamine becomes NaN**. Acetylcholine still saturates from
+    ///   `|td_error|.tanh()` when `td_error` is infinite.
+    /// - Same-signed successive infinities (`+∞` then `+∞`, or `-∞` then
+    ///   `-∞`) produce `td_error = ∞ − ∞ = NaN`, so **both** dopamine and
+    ///   acetylcholine are NaN on that step (ACh does not saturate).
+    /// - Auxiliary `volatility` / `stress` follow the same clamp rules as
+    ///   [`SimpleCritic::assess`]: NaN stays NaN; infinities clamp to bounds.
     ///
     /// # Parameters
     ///
@@ -246,6 +304,13 @@ impl TDCritic {
             norepinephrine: stress,
         }
     }
+}
+
+/// `alpha` is accepted only in the open-closed interval `(0, 1]`.
+///
+/// `NaN` and infinities fail the comparison and are rejected.
+fn is_valid_alpha(alpha: f32) -> bool {
+    alpha > 0.0 && alpha <= 1.0
 }
 
 #[cfg(test)]
@@ -372,7 +437,7 @@ mod tests {
     #[test]
     fn test_td_critic_no_change() {
         let env = ConstEnv(0.5);
-        let mut td = TDCritic::new(0.1);
+        let mut td = TDCritic::new(0.1).expect("alpha in (0, 1]");
         let mods = td.assess(&env);
         // First call: td_error = 0.5 - 0.0 = 0.5
         // ema starts at 0.0, so ema = 0.9*0.0 + 0.1*0.5 = 0.05
@@ -382,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_td_critic_improvement() {
-        let mut td = TDCritic::new(0.1);
+        let mut td = TDCritic::new(0.1).expect("alpha in (0, 1]");
         let mut env = VolatileEnv::new(vec![0.0, 1.0]);
 
         let first = td.assess(&env);
@@ -395,7 +460,7 @@ mod tests {
 
     #[test]
     fn test_td_critic_degradation() {
-        let mut td = TDCritic::new(0.1);
+        let mut td = TDCritic::new(0.1).expect("alpha in (0, 1]");
         let mut env = VolatileEnv::new(vec![1.0, 0.0]);
 
         let first = td.assess(&env);
@@ -408,7 +473,7 @@ mod tests {
 
     #[test]
     fn test_td_critic_surprise() {
-        let mut td = TDCritic::new(0.1);
+        let mut td = TDCritic::new(0.1).expect("alpha in (0, 1]");
         let env = ConstEnv(0.5);
 
         let mods = td.assess(&env);
@@ -429,9 +494,155 @@ mod tests {
                 self.v
             }
         }
-        let mut td = TDCritic::new(0.1);
+        let mut td = TDCritic::new(0.1).expect("alpha in (0, 1]");
         let env = TdVolatileEnv { v: 0.6 };
         let mods = td.assess(&env);
         assert_eq!(mods.serotonin, 0.6);
+    }
+
+    #[test]
+    fn td_critic_rejects_non_positive_or_above_one_alpha() {
+        assert!(matches!(TDCritic::new(0.0), Err(InvalidAlpha)));
+        assert!(matches!(TDCritic::new(-0.1), Err(InvalidAlpha)));
+        assert!(matches!(TDCritic::new(-0.0), Err(InvalidAlpha)));
+        assert!(matches!(TDCritic::new(1.0001), Err(InvalidAlpha)));
+        assert!(matches!(TDCritic::new(2.0), Err(InvalidAlpha)));
+    }
+
+    #[test]
+    fn td_critic_rejects_nonfinite_alpha() {
+        assert!(matches!(TDCritic::new(f32::NAN), Err(InvalidAlpha)));
+        assert!(matches!(TDCritic::new(f32::INFINITY), Err(InvalidAlpha)));
+        assert!(matches!(
+            TDCritic::new(f32::NEG_INFINITY),
+            Err(InvalidAlpha)
+        ));
+    }
+
+    #[test]
+    fn invalid_alpha_display_and_error() {
+        assert!(matches!(TDCritic::new(0.0), Err(InvalidAlpha)));
+        assert_eq!(
+            InvalidAlpha.to_string(),
+            "TDCritic alpha must be in (0, 1] (finite, greater than 0, at most 1)"
+        );
+        let as_error: &dyn std::error::Error = &InvalidAlpha;
+        assert!(as_error.source().is_none());
+    }
+
+    #[test]
+    fn td_critic_accepts_unit_interval_alpha() {
+        assert!(TDCritic::new(1.0).is_ok());
+        assert!(TDCritic::new(f32::EPSILON).is_ok());
+        assert!(TDCritic::new(0.5).is_ok());
+    }
+
+    struct AuxEnv {
+        objective: f32,
+        surprise: f32,
+        volatility: f32,
+        stress: f32,
+    }
+
+    impl Environment for AuxEnv {
+        fn objective(&self) -> f32 {
+            self.objective
+        }
+        fn surprise(&self) -> f32 {
+            self.surprise
+        }
+        fn volatility(&self) -> f32 {
+            self.volatility
+        }
+        fn stress(&self) -> f32 {
+            self.stress
+        }
+    }
+
+    #[test]
+    fn simple_critic_nonfinite_and_negative_objectives() {
+        // NaN / non-positive → dopamine 0 (the `objective > 0` branch).
+        assert_eq!(SimpleCritic::assess(&ConstEnv(f32::NAN)).dopamine, 0.0);
+        assert_eq!(
+            SimpleCritic::assess(&ConstEnv(f32::NEG_INFINITY)).dopamine,
+            0.0
+        );
+        assert_eq!(SimpleCritic::assess(&ConstEnv(-1.5)).dopamine, 0.0);
+        assert_eq!(SimpleCritic::assess(&ConstEnv(0.0)).dopamine, 0.0);
+        // +∞ clamps to 1.0
+        assert_eq!(SimpleCritic::assess(&ConstEnv(f32::INFINITY)).dopamine, 1.0);
+    }
+
+    #[test]
+    fn simple_critic_nonfinite_aux_signals_follow_clamp() {
+        let nan = SimpleCritic::assess(&AuxEnv {
+            objective: 0.2,
+            surprise: f32::NAN,
+            volatility: f32::NAN,
+            stress: f32::NAN,
+        });
+        assert!(nan.acetylcholine.is_nan());
+        assert!(nan.serotonin.is_nan());
+        assert!(nan.norepinephrine.is_nan());
+
+        let inf = SimpleCritic::assess(&AuxEnv {
+            objective: 0.2,
+            surprise: f32::INFINITY,
+            volatility: f32::NEG_INFINITY,
+            stress: f32::INFINITY,
+        });
+        assert_eq!(inf.acetylcholine, 1.0);
+        assert_eq!(inf.serotonin, 0.0);
+        assert_eq!(inf.norepinephrine, 1.0);
+    }
+
+    #[test]
+    fn td_critic_nan_objective_propagates_through_td() {
+        let mut td = TDCritic::new(0.1).expect("alpha in (0, 1]");
+        let mods = td.assess(&ConstEnv(f32::NAN));
+        assert!(mods.dopamine.is_nan());
+        assert!(mods.acetylcholine.is_nan());
+    }
+
+    #[test]
+    fn td_critic_infinite_objective_saturates_tanh() {
+        let mut td = TDCritic::new(1.0).expect("alpha in (0, 1]");
+        let pos = td.assess(&ConstEnv(f32::INFINITY));
+        assert_eq!(pos.dopamine, 1.0);
+        assert_eq!(pos.acetylcholine, 1.0);
+
+        let mut td = TDCritic::new(1.0).expect("alpha in (0, 1]");
+        let neg = td.assess(&ConstEnv(f32::NEG_INFINITY));
+        assert_eq!(neg.dopamine, -1.0);
+        assert_eq!(neg.acetylcholine, 1.0);
+    }
+
+    #[test]
+    fn td_critic_infinite_history_then_finite_yields_nan_dopamine() {
+        let mut td = TDCritic::new(1.0).expect("alpha in (0, 1]");
+        let _ = td.assess(&ConstEnv(f32::INFINITY));
+        // td_error = finite - ∞ = -∞; ACh saturates, but EMA is 0*∞ + 1*(-∞) → NaN.
+        let after = td.assess(&ConstEnv(0.0));
+        assert!(after.dopamine.is_nan());
+        assert_eq!(after.acetylcholine, 1.0);
+    }
+
+    #[test]
+    fn td_critic_nan_history_then_finite_stays_nan() {
+        let mut td = TDCritic::new(0.1).expect("alpha in (0, 1]");
+        let _ = td.assess(&ConstEnv(f32::NAN));
+        let after = td.assess(&ConstEnv(0.5));
+        assert!(after.dopamine.is_nan());
+        assert!(after.acetylcholine.is_nan());
+    }
+
+    #[test]
+    fn td_critic_same_signed_infinities_yield_nan_ach() {
+        let mut td = TDCritic::new(1.0).expect("alpha in (0, 1]");
+        let _ = td.assess(&ConstEnv(f32::INFINITY));
+        // td_error = ∞ − ∞ = NaN; ACh does not saturate.
+        let after = td.assess(&ConstEnv(f32::INFINITY));
+        assert!(after.dopamine.is_nan());
+        assert!(after.acetylcholine.is_nan());
     }
 }

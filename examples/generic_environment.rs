@@ -41,7 +41,7 @@ fn main() {
     );
 
     // Example 2: TD critic over a volatile sequence
-    let mut td = TDCritic::new(0.2);
+    let mut td = TDCritic::new(0.2).expect("alpha in (0, 1]");
     for &obj in &[0.0, 0.4, 0.3, 0.9] {
         let e = GenericEnv {
             objective: obj,
